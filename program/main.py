@@ -10,11 +10,80 @@ DEFAULT_MEDSAM2_WEIGHT_PATH = (
 )
 
 
+def ensure_runtime_dependencies() -> None:
+    import importlib
+    import importlib.util
+    import re
+    import subprocess
+    import sys
+    from importlib.metadata import PackageNotFoundError, version
+
+    sam2_package = Path(__file__).resolve().parent / "sam2" / "sam2" / "__init__.py"
+    if not sam2_package.is_file():
+        raise FileNotFoundError(
+            "SAM2 submodule is missing. From the project root run: "
+            "git submodule update --init --recursive"
+        )
+
+    missing_torch = [
+        module_name
+        for module_name in ("torch", "torchvision")
+        if importlib.util.find_spec(module_name) is None
+    ]
+    if missing_torch:
+        raise RuntimeError(
+            "Missing platform-specific dependencies: "
+            f"{', '.join(missing_torch)}. Install the PyTorch build matching your "
+            "CUDA/runtime environment before running inference."
+        )
+
+    try:
+        torchao_version = version("torchao")
+    except PackageNotFoundError:
+        torchao_version = None
+
+    if torchao_version is not None:
+        match = re.match(r"^(\d+)\.(\d+)\.(\d+)", torchao_version)
+        if match and tuple(map(int, match.groups())) <= (0, 16, 0):
+            print(
+                f"Removing incompatible optional torchao {torchao_version}; "
+                "the installed PEFT requires torchao > 0.16.0 when it is present."
+            )
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "uninstall", "-y", "torchao"]
+            )
+            for module_name in tuple(sys.modules):
+                if module_name == "torchao" or module_name.startswith("torchao."):
+                    del sys.modules[module_name]
+
+    module_to_package = {
+        "cv2": "opencv-python-headless",
+        "hydra": "hydra-core",
+        "iopath": "iopath",
+        "peft": "peft",
+        "PIL": "Pillow",
+        "ultralytics": "ultralytics",
+    }
+    missing_packages = [
+        package_name
+        for module_name, package_name in module_to_package.items()
+        if importlib.util.find_spec(module_name) is None
+    ]
+    if missing_packages:
+        print(f"Installing missing runtime dependencies: {', '.join(missing_packages)}")
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", *missing_packages]
+        )
+        importlib.invalidate_caches()
+
+
 def run_inference(
     image_path: str | Path,
     output_mask_path: str | Path,
     fold_number: int = 1,
 ) -> Path:
+    ensure_runtime_dependencies()
+
     import cv2
     from PIL import Image
 
